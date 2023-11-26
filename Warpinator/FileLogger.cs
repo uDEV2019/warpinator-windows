@@ -36,9 +36,11 @@ namespace Warpinator
         {
             if (!logToFile)
                 return;
-            string path = Utils.GetDataDir();
-            string log1 = Path.Combine(path, "latest.log");
-            string log2 = Path.Combine(path, "previous.log");
+            string localDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Warpinator"); //Cant use utils yet
+            if (!Directory.Exists(localDataDir))
+                Directory.CreateDirectory(localDataDir);
+            string log1 = Path.Combine(localDataDir, "latest.log");
+            string log2 = Path.Combine(localDataDir, "previous.log");
             if (File.Exists(log1) && (new FileInfo(log1).Length > 1024*1024))
             {
                 File.Delete(log2);

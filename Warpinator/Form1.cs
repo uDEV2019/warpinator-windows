@@ -21,6 +21,7 @@ namespace Warpinator
         readonly Timer rescanTimer = new Timer();
         static Form1 current;
         bool quit = false;
+        bool firstShow = true;
 
         public Form1()
         {
@@ -36,7 +37,7 @@ namespace Warpinator
             server = new Server();
         }
 
-        private async void Form1_Show(object sender, EventArgs e)
+        private async void Form1_Load(object sender, EventArgs e)
         {
             //server.Remotes.Add("a", new Remote { DisplayName = "TEST", UserName = "test", Hostname = "PC1", Address = System.Net.IPAddress.Parse("192.168.1.1"),
             //    Port = 42000, Status = RemoteStatus.DISCONNECTED });
@@ -44,14 +45,18 @@ namespace Warpinator
             
             if (Properties.Settings.Default.FirstRun)
             {
-                var res = MessageBox.Show(Resources.Strings.do_you_want_to_check_for_updates, Resources.Strings.info, MessageBoxButtons.YesNo);
-                if (res == DialogResult.Yes)
-                    Properties.Settings.Default.CheckForUpdates = true;
-                Properties.Settings.Default.FirstRun = false;
+                Properties.Settings.Default.Upgrade();
+                if (Properties.Settings.Default.FirstRun)
+                {
+                    var res = MessageBox.Show(Resources.Strings.do_you_want_to_check_for_updates, Resources.Strings.info, MessageBoxButtons.YesNo);
+                    if (res == DialogResult.Yes)
+                        Properties.Settings.Default.CheckForUpdates = true;
+                    Properties.Settings.Default.FirstRun = false;
+                }
                 Properties.Settings.Default.Save();
             }
             if (Properties.Settings.Default.CheckForUpdates)
-                await CheckForUpdates();
+                await CheckForUpdates();   
             try
             {
                 await server.Start();
@@ -60,6 +65,16 @@ namespace Warpinator
             {
                 log.Error("Failed to start server", ex);
                 MessageBox.Show(String.Format(Resources.Strings.failed_to_start_server, ex.Message), Resources.Strings.error, MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void Form1_Shown(object sender, EventArgs e)
+        {
+            if (firstShow)
+            {
+                firstShow = false;
+                if (Properties.Settings.Default.RunInBackground && Properties.Settings.Default.StartMinimized)
+                    this.Hide(); //This is said to work better in Shown rather than Load
             }
         }
 
@@ -90,22 +105,30 @@ namespace Warpinator
                 current.Invoke(new Action(() => current.DoUpdateUI()));
         }
 
+        public static void UpdateLabels()
+        {
+            if (current != null)
+                current.Invoke(new Action(() => current.DoUpdateLabels()));
+        }
+
         public static void OnSendTo()
         {
             if (current != null)
             {
                 current.Invoke(new Action(() =>
                 {
-                    current.DoUpdateUI();
+                    current.DoUpdateLabels();
+                    current.Show();
                     current.Activate();
                 }));
             }
         }
 
+        private int numOutgroup = 0;
         private void DoUpdateUI()
         {
             flowLayoutPanel.Controls.Clear();
-            int numOutgroup = 0;
+            numOutgroup = 0;
             foreach (var r in server.Remotes.Values)
             {
                 if (r.GroupCodeError)
@@ -118,6 +141,11 @@ namespace Warpinator
                 btn.Width = flowLayoutPanel.ClientSize.Width - 10;
                 btn.Show();
             }
+            DoUpdateLabels();
+        }
+
+        private void DoUpdateLabels()
+        {
             lblNoDevicesFound.Visible = server.Remotes.Count == 0 && server.Running;
             btnRescan.Visible = server.Remotes.Count == 0 && server.Running;
             if (lblInitializing.Visible && server.Running)
@@ -126,14 +154,13 @@ namespace Warpinator
                 rescanTimer.Start();
             }
             lblInitializing.Visible = !server.Running;
+            lblStatus.Text = server.Running ? Resources.Strings.service_running : Resources.Strings.service_not_running;
             this.Cursor = server.Running ? Cursors.Default : Cursors.WaitCursor;
 
             string iface = Makaretu.Dns.MulticastService.GetNetworkInterfaces().FirstOrDefault((i) => i.Id == server.SelectedInterface)?.Name ?? Resources.Strings.interface_unavailable;
             if (String.IsNullOrEmpty(server.SelectedInterface))
                 iface = Resources.Strings.any;
-            lblIP.Text = Utils.GetLocalIPAddress() + " | " + iface;
-            
-            lblStatus.Text = server.Running ? Resources.Strings.service_running : Resources.Strings.service_not_running;
+            lblIP.Text = server.SelectedIP + " | " + iface;
 
             if (Program.SendPaths.Count != 0)
             {
@@ -153,7 +180,6 @@ namespace Warpinator
         {
             if (Properties.Settings.Default.NotifyIncoming && current != null)
                 current.Invoke(new Action(() => current.ShowTransferBaloon(t)));
-            UpdateUI();
         }
 
         EventHandler ballonClickHandler;

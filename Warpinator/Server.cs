@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Threading.Tasks;
 using System.Timers;
 using Common.Logging;
@@ -27,6 +28,7 @@ namespace Warpinator
         public string UUID;
         public bool Running = false;
         public string SelectedInterface;
+        public IPAddress SelectedIP { get; private set; }
 
         public Dictionary<string, Remote> Remotes = new Dictionary<string, Remote>();
 
@@ -38,11 +40,18 @@ namespace Warpinator
         readonly ConcurrentDictionary<string, IPAddress> hostnameDict = new ConcurrentDictionary<string, IPAddress>();
         internal Properties.Settings settings = Properties.Settings.Default;
         Timer pingTimer = new Timer(10_000);
+        List<NetworkInterface> knownNics = null;
+        bool restarting = false;
+        bool needsRestart = false; //Needs another restart - in case restart was initiated while previous was in progress
 
         public Server()
         {
             current = this;
-            DisplayName = System.DirectoryServices.AccountManagement.UserPrincipal.Current.DisplayName ?? Environment.UserName;
+            try {
+                DisplayName = System.DirectoryServices.AccountManagement.UserPrincipal.Current.DisplayName ?? Environment.UserName;
+            } catch { // Mono does not have directory services
+                DisplayName = Environment.UserName;
+            }
             Hostname = Environment.MachineName;
             UserName = Environment.UserName;
             
@@ -60,7 +69,8 @@ namespace Warpinator
                 settings.DownloadDir = Path.Combine(Utils.GetDefaultDownloadFolder(), "Warpinator");
                 Directory.CreateDirectory(settings.DownloadDir);
             }
-
+            SelectedInterface = settings.NetworkInterface;
+            SelectedIP = Utils.GetLocalIPAddress();
             mdns = new MulticastService((ifaces) => ifaces.Where((iface) => SelectedInterface == null || iface.Id == SelectedInterface));
             mdns.UseIpv6 = false;
             mdns.IgnoreDuplicateMessages = true;
@@ -74,13 +84,14 @@ namespace Warpinator
             Running = true;
             Authenticator.GroupCode = settings.GroupCode;
             if (String.IsNullOrEmpty(settings.NetworkInterface))
-                SelectedInterface = null;
+                SelectedInterface = Utils.AutoSelectNetworkInterface();
             else SelectedInterface = settings.NetworkInterface;
+            SelectedIP = Utils.GetLocalIPAddress();
             await StartGrpcServer(); //Also initializes authenticator for certserver
             CertServer.Start(Port);
             StartMDNS();
             pingTimer.Start();
-            Form1.UpdateUI();
+            Form1.UpdateLabels();
         }
 
         public async Task Stop()
@@ -91,16 +102,32 @@ namespace Warpinator
             pingTimer.Stop();
             sd.Unadvertise(serviceProfile);
             mdns.Stop();
+            NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
             CertServer.Stop();
             await grpcServer.ShutdownAsync();
-            Form1.UpdateUI();
-            log.Info("-- Server stopped");
+            Form1.UpdateLabels();
+            log.Info("-- Server stopped\n");
         }
 
         public async void Restart()
         {
+            if (restarting)
+            {
+                log.Debug("- Restart in progress, will restart again after it finishes...");
+                needsRestart = true;
+                return;
+            }
+            restarting = true;
+            log.Info(">> Restarting server");
+            needsRestart = false;
             await Stop();
             await Start();
+            restarting = false;
+            if (needsRestart)
+            {
+                log.Debug("- Executing deferred restart");
+                Restart();
+            }
         }
 
         public void Rescan() => sd.QueryServiceInstances(SERVICE_TYPE);
@@ -109,9 +136,10 @@ namespace Warpinator
         private async Task StartGrpcServer()
         {
             KeyCertificatePair kcp = await Task.Run(Authenticator.GetKeyCertificatePair);
+            SelectedIP = Utils.GetLocalIPAddress();
             grpcServer = new Grpc.Core.Server() { 
                 Services = { Warp.BindService(new GrpcService()) },
-                Ports = { new ServerPort(Utils.GetLocalIPAddress().ToString(), Port, new SslServerCredentials(new List<KeyCertificatePair>() { kcp })) }
+                Ports = { new ServerPort(SelectedIP.ToString(), Port, new SslServerCredentials(new List<KeyCertificatePair>() { kcp })) }
             };
             grpcServer.Start();
             log.Info("GRPC started");
@@ -120,18 +148,9 @@ namespace Warpinator
         private void StartMDNS(bool flush = false)
         {
             log.Debug("Starting mdns");
-
-            foreach (var a in MulticastService.GetIPAddresses())
-            {
-                log.Debug($"IP address {a}");
-            }
-            mdns.NetworkInterfaceDiscovered += (s, e) =>
-            {
-                foreach (var nic in e.NetworkInterfaces)
-                {
-                    log.Debug($"discovered NIC '{nic.Name}', id: {nic.Id}");
-                }
-            };
+            if (knownNics == null)
+                knownNics = MulticastService.GetNetworkInterfaces().ToList();
+            NetworkChange.NetworkAddressChanged += OnNetworkChanged;
             sd = new ServiceDiscovery(mdns);
             sd.ServiceInstanceDiscovered += OnServiceInstanceDiscovered;
             sd.ServiceInstanceShutdown += OnServiceInstanceShutdown;
@@ -140,7 +159,7 @@ namespace Warpinator
             mdns.Start();
             sd.QueryServiceInstances(SERVICE_TYPE);
 
-            serviceProfile = new ServiceProfile(UUID, SERVICE_TYPE, Port, new List<IPAddress> { Utils.GetLocalIPAddress() });
+            serviceProfile = new ServiceProfile(UUID, SERVICE_TYPE, Port, new List<IPAddress> { SelectedIP });
             serviceProfile.AddProperty("hostname", Utils.GetHostname());
             serviceProfile.AddProperty("type", flush ? "flush" : "real");
             sd.Advertise(serviceProfile);
@@ -154,6 +173,31 @@ namespace Warpinator
                 if (r.Status == RemoteStatus.CONNECTED)
                     r.Ping();
             }
+        }
+
+        private void OnNetworkChanged(object s, EventArgs a)
+        {
+            var nics = MulticastService.GetNetworkInterfaces();
+            var oldNics = knownNics.Where(k => !nics.Any(n => k.Id == n.Id));
+            oldNics.ToList().ForEach((n) => log.Debug("-- Removed iface: " + n.Name));
+            var newNics = nics.Where(nic => !knownNics.Any(k => k.Id == nic.Id));
+            newNics.ToList().ForEach((n) => log.Debug("++ Added iface: " + n.Name));
+            if (newNics.Any() || oldNics.Any())
+            {
+                knownNics = nics.ToList();
+                string newBestNIC = String.IsNullOrEmpty(settings.NetworkInterface) ? Utils.AutoSelectNetworkInterface(true) : settings.NetworkInterface;
+                var newAddress = Utils.GetIPAddressForNIC(newBestNIC);
+                if (!SelectedIP.Equals(newAddress) && !newAddress.Equals(IPAddress.Loopback))
+                {
+                    log.Info($"New address: {SelectedIP} -> {newAddress}");
+                    SelectedInterface = null;
+                    SelectedIP = newAddress;
+                    Restart();
+                    return;
+                }
+            }
+            NetworkChange.NetworkAddressChanged -= OnNetworkChanged;
+            NetworkChange.NetworkAddressChanged += OnNetworkChanged;
         }
 
         private void OnServiceInstanceDiscovered(object sender, ServiceInstanceDiscoveryEventArgs e)
@@ -192,7 +236,7 @@ namespace Warpinator
                 if (server.TTL == TimeSpan.Zero)
                     continue;
                 var srvName = String.Join(".", server.Name.Labels);
-                log.Debug($"  Service '{srvName}' has hostname '{server.Target} and port {server.Port}'");
+                //log.Debug($"  Service '{srvName}' has hostname '{server.Target} and port {server.Port}'");
                 if (!mdnsServices.ContainsKey(server.CanonicalName))
                     mdnsServices.TryAdd(server.CanonicalName, new ServiceRecord { FullName = srvName });
                 mdnsServices[server.CanonicalName].Hostname = server.Target.ToString();
@@ -204,7 +248,7 @@ namespace Warpinator
             var addresses = answers.OfType<AddressRecord>();
             foreach (var address in addresses)
             {
-                if (address.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                if (address.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork) // is IPv4
                 {
                     log.Debug($"  Hostname '{address.Name}' resolves to {address.Address}");
                     hostnameDict.AddOrUpdate(address.Name.ToString(), address.Address, (a, b) => address.Address);

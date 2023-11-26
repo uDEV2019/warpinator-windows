@@ -21,7 +21,7 @@ namespace Warpinator
 {
     class Authenticator
     {
-        static readonly ILog log = LogManager.GetLogger<Authenticator>();
+        static readonly ILog log = Program.Log.GetLogger("Authenticator");
 
         public static string GroupCode = DefaultGroupCode;
         const string DefaultGroupCode = "Warpinator";
@@ -76,7 +76,6 @@ namespace Warpinator
 
         public static KeyCertificatePair GetKeyCertificatePair()
         {
-            log.Debug(Utils.GetCertDir());
             if (File.Exists(Path.Combine(Utils.GetCertDir(), CertificateFileName)))
             {
                 var pair1 = LoadKeyCertificatePair();
@@ -89,14 +88,13 @@ namespace Warpinator
                     var addr = new IPAddress(IPAddress.NetworkToHostOrder(ipNetInt) >> 32);
                     
                     cert.CheckValidity(); //Throws if invalid
-                    if (addr != Utils.GetLocalIPAddress())
+                    if (addr != Server.current.SelectedIP)
                         throw new Org.BouncyCastle.Security.Certificates.CertificateExpiredException();
                     return pair1;
                 } catch {}
             }
 
-            KeyCertificatePair pair = CreateKeyCertificatePair(Utils.GetHostname(), Utils.GetLocalIPAddress().ToString());
-            log.Debug(Path.Combine(Utils.GetCertDir(), CertificateFileName));
+            KeyCertificatePair pair = CreateKeyCertificatePair(Utils.GetHostname(), Server.current.SelectedIP.ToString());
             Directory.CreateDirectory(Utils.GetCertDir());
             File.WriteAllText(Path.Combine(Utils.GetCertDir(), CertificateFileName), pair.CertificateChain);
             File.WriteAllText(Path.Combine(Utils.GetCertDir(), KeyFileName), pair.PrivateKey);
@@ -105,6 +103,7 @@ namespace Warpinator
 
         private static KeyCertificatePair CreateKeyCertificatePair(string subjectName, string ip)
         {
+            log.Debug($"New cert for IP {ip}");
             var randomGenerator = new CryptoApiRandomGenerator();
             var random = new SecureRandom(randomGenerator);
 

@@ -53,7 +53,6 @@ namespace Warpinator
             {
                 Status = RemoteStatus.ERROR;
                 UpdateUI();
-                Form1.UpdateUI();
                 return;
             }
             log.Trace($"Certificate for {Hostname} received and saved");
@@ -93,7 +92,6 @@ namespace Warpinator
             }
 
             UpdateUI();
-            Form1.UpdateUI();
             log.Info($"Connection established with {Hostname}");
         }
 
@@ -151,6 +149,7 @@ namespace Warpinator
             bool cancelled = false;
             try
             {
+                t.recvWatch.Restart();
                 using (var i = client.StartTransfer(info))
                 {
                     while (await i.ResponseStream.MoveNext() && !cancelled)
@@ -171,11 +170,22 @@ namespace Warpinator
                 }
                 else
                 {
-                    log.Error("Error while receiving", e);
-                    t.errors.Add("Error while receiving: " + e.Status.Detail);
+                    log.Error("RPC error while receiving", e);
+                    t.errors.Add("Error while receiving. Remote status: " + e.Status.Detail);
                     t.Status = TransferStatus.FAILED;
                 }
                 t.OnTransferUpdated();
+            }
+            catch (Exception e)
+            {
+                log.Error("Fatal error while receiving", e);
+                t.errors.Add("Error while receiving: " + e.Message);
+                t.Status = TransferStatus.FAILED;
+                t.OnTransferUpdated();
+            }
+            finally
+            {
+                t.recvWatch.Stop();
             }
         }
 
@@ -217,7 +227,7 @@ namespace Warpinator
                     RemoteUUID = UUID
                 };
                 Program.SendPaths = new List<string>();
-                Form1.UpdateUI();
+                Form1.UpdateLabels(); // Revert regular UI
                 t.PrepareSend();
                 Transfers.Add(t);
                 UpdateTransfers();
@@ -246,6 +256,13 @@ namespace Warpinator
         {
             if (form != null)
                 form.Invoke(new Action(() => form.UpdateTransfers()));
+            RemoteUpdated?.Invoke(this, null); // update RemoteButton in Form1 to indicate incoming transfer
+        }
+
+        public void ClearTransfers()
+        {
+            Transfers.RemoveAll((t) => (t.Status == TransferStatus.FINISHED) || (t.Status == TransferStatus.FINISHED_WITH_ERRORS) ||
+              (t.Status == TransferStatus.DECLINED) || (t.Status == TransferStatus.FAILED) || (t.Status == TransferStatus.STOPPED));
         }
 
         public string GetStatusString()

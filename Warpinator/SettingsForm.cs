@@ -30,6 +30,10 @@ namespace Warpinator
             chkOverwrite.Checked = Properties.Settings.Default.AllowOverwrite;
             chkAutoAccept.Checked = Properties.Settings.Default.AutoAccept;
             chkBackground.Checked = Properties.Settings.Default.RunInBackground;
+            if (!Properties.Settings.Default.RunInBackground)
+                chkStartMinimized.Enabled = false;
+            else
+                chkStartMinimized.Checked = Properties.Settings.Default.StartMinimized;
             chkUpdates.Checked = Properties.Settings.Default.CheckForUpdates;
 
             var ifaces = MulticastService.GetNetworkInterfaces();
@@ -74,6 +78,7 @@ namespace Warpinator
             Properties.Settings.Default.AllowOverwrite = chkOverwrite.Checked;
             Properties.Settings.Default.AutoAccept = chkAutoAccept.Checked;
             Properties.Settings.Default.RunInBackground = chkBackground.Checked;
+            Properties.Settings.Default.StartMinimized = chkStartMinimized.Checked;
             Properties.Settings.Default.CheckForUpdates = chkUpdates.Checked;
 
             Properties.Settings.Default.Save();
@@ -105,6 +110,13 @@ namespace Warpinator
         {
             txtGroupcode.UseSystemPasswordChar = !txtGroupcode.UseSystemPasswordChar;
             btnShowCode.BackgroundImage = txtGroupcode.UseSystemPasswordChar ? Properties.Resources.visible : Properties.Resources.invisible;
+        }
+
+        private void chkBackground_CheckedChanged(object sender, EventArgs e)
+        {
+            chkStartMinimized.Enabled = chkBackground.Checked;
+            if (!chkBackground.Checked)
+                chkStartMinimized.Checked = false;
         }
     }
 }

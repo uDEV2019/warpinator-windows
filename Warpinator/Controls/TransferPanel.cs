@@ -1,4 +1,5 @@
 ﻿using System;
+using System.IO;
 using System.Windows.Forms;
 
 namespace Warpinator.Controls
@@ -55,7 +56,7 @@ namespace Warpinator.Controls
             }
             else if (transfer.Status == TransferStatus.TRANSFERRING)
                 lblProgress.Text = Utils.BytesToHumanReadable(transfer.BytesTransferred) + " / " + Utils.BytesToHumanReadable((long)transfer.TotalSize) + " (" +
-                Utils.BytesToHumanReadable(transfer.BytesPerSecond) + "/s, " + String.Format(Resources.Strings.remaining, transfer.GetRemainingTime()) + ")";
+                Utils.BytesToHumanReadable(transfer.BytesPerSecond.GetMovingAverage()) + "/s, " + String.Format(Resources.Strings.remaining, transfer.GetRemainingTime()) + ")";
             else
                 lblProgress.Text = transfer.GetStatusString();
             progressBar.Value = (int)(transfer.Progress * 100);
@@ -64,6 +65,17 @@ namespace Warpinator.Controls
 
         private void BtnAccept_Click(object sender, EventArgs e)
         {
+            // Create download dir if it doesn't exist
+            if (!Directory.Exists(Server.current.settings.DownloadDir))
+            {
+                try {
+                    Directory.CreateDirectory(Server.current.settings.DownloadDir);
+                } catch {
+                    MessageBox.Show(Resources.Strings.cannot_create_dldir, Resources.Strings.error, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
             transfer.StartReceiving();
         }
 

@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -11,6 +12,7 @@ namespace Warpinator
 {
     static class Utils
     {
+        static Common.Logging.ILog log = Program.Log.GetLogger("Utils");
         public static string GetDataDir()
         {
             return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Warpinator");
@@ -26,14 +28,50 @@ namespace Warpinator
             return Environment.MachineName;
         }
 
-        public static IPAddress GetLocalIPAddress()
-        {
+        public static IPAddress GetLocalIPAddress() => GetIPAddressForNIC(Server.current.SelectedInterface);
+        
+        public static IPAddress GetIPAddressForNIC(string nic) {
             var ip = Makaretu.Dns.MulticastService.GetNetworkInterfaces().FirstOrDefault((i) =>
-                String.IsNullOrEmpty(Server.current.SelectedInterface) || i.Id == Server.current.SelectedInterface)?.GetIPProperties().UnicastAddresses
+                String.IsNullOrEmpty(nic) || i.Id == nic)?.GetIPProperties().UnicastAddresses
                 .FirstOrDefault((a) => a.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && a.Address.GetAddressBytes().Length == 4)?.Address
                 ?? IPAddress.Loopback;
             Console.WriteLine("Got ip " + ip?.ToString());
             return ip;
+        }
+
+        public static string AutoSelectNetworkInterface(bool suppressDebug = false)
+        {
+            // Non-virtual gateway > Any gateway > Non-virtual eth > WiFi > Any up iface > loopback
+            NetworkInterface[] nics = NetworkInterface.GetAllNetworkInterfaces();
+            if (!suppressDebug)
+                nics.ToList().ForEach((ni) => log.Trace($"Got iface: {ni.Name} - {ni.Description}"));
+            NetworkInterfaceType[] ethernet = { NetworkInterfaceType.Ethernet, NetworkInterfaceType.FastEthernetT, NetworkInterfaceType.FastEthernetFx,
+                NetworkInterfaceType.GigabitEthernet, NetworkInterfaceType.Ethernet3Megabit};
+            var operational = nics.Where((n) => n.OperationalStatus == OperationalStatus.Up);
+            var withGateway = operational.Where(n => n.GetIPProperties()?.GatewayAddresses?.Any((a) => a != null) ?? false);
+            var res = withGateway.FirstOrDefault((n) => !n.Description.Contains("Virtual"));
+            if (res == null)
+            {
+                res = withGateway.FirstOrDefault();
+                if (res == null)
+                {
+                    res = operational.FirstOrDefault((n) => ethernet.Contains(n.NetworkInterfaceType) && !n.Description.Contains("Virtual"));
+                    if (res == null)
+                    {
+                        var wifi = operational.Where((n) => n.NetworkInterfaceType == NetworkInterfaceType.Wireless80211);
+                        res = wifi.FirstOrDefault();
+                        if (res == null)
+                        {
+                            res = operational.FirstOrDefault();
+
+                            if (res == null)
+                                res = nics[NetworkInterface.LoopbackInterfaceIndex];
+                            else log.Trace($"Picked first up interface {res.Name}");
+                        } else log.Trace($"Picked wifi {res.Name}");
+                    } else log.Trace($"Picked eth {res.Name}");
+                } else log.Trace($"Picked gateway {res.Name}");
+            } else log.Trace($"Picked non-virtual gateway {res.Name}");
+            return res.Id;
         }
 
         public static string BytesToHumanReadable(long _bytes)
