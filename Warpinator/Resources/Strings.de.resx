@@ -132,6 +132,9 @@
     <value>Ein paar Sekunden</value>
     <comment>... remaining</comment>
   </data>
+  <data name="cannot_create_dldir" xml:space="preserve">
+    <value>Das Download-Verzeichnis existiert nicht und kann nicht erstellt werden. Bitte versuchen Sie in den Einstellungen eine anderes Verzeichnis auszuwählen.</value>
+  </data>
   <data name="cant_open_browser" xml:space="preserve">
     <value>Webbrowser konnte nicht geöffnet werden. Die folgende URL verwenden: {0}</value>
   </data>
